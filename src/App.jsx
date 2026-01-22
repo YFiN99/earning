@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
-import { ArrowDown, Zap, RefreshCw, Plus, Trash2, ArrowUpDown, ChevronDown, MessageSquare } from 'lucide-react';
+import { ArrowDown, Zap, RefreshCw, Plus, Trash2, ArrowUpDown, ChevronDown, MessageSquare, Send } from 'lucide-react';
 import { Toaster, toast } from 'react-hot-toast';
 
 const DEX_ADDRESS = "0x0aEa13Db0b307a541E22cd272BB34f8e6FeE7c52"; 
@@ -8,7 +8,6 @@ const SLVR_ADDRESS = "0x571e42E46AFd658471d609B19448bd0ef910E777";
 const WKII_ADDRESS = "0x5B8832c0087c2E1F2Df579567A93B8d1420329B0";
 const POOL_ID = "0xf0d632cccf45506f4a5b2df2251e9edd54681e79135ddc65f5b6995699fbad6c";
 
-// Ambil API Key dari Vercel Environment Variable (Aman)
 const AMBIENT_API_KEY = import.meta.env.VITE_AMBIENT_API_KEY;
 
 const DEX_ABI = [
@@ -33,6 +32,10 @@ export default function App() {
   const [balances, setBalances] = useState({ kii: '0.000000', slvr: '0.000000' });
   const [loading, setLoading] = useState(false);
   const [isKiiTop, setIsKiiTop] = useState(true);
+  
+  // State Baru untuk Chat AI
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiResponse, setAiResponse] = useState('');
 
   const fetchBalances = async (acc) => {
     try {
@@ -56,7 +59,6 @@ export default function App() {
 
   const handleMax = () => {
     if (isKiiTop) {
-      // Sisakan sedikit KII untuk gas fee (misal 0.005 KII)
       const val = parseFloat(balances.kii) - 0.005;
       setAmountIn(val > 0 ? val.toFixed(6) : '0');
     } else {
@@ -86,11 +88,36 @@ export default function App() {
     setLoading(false);
   };
 
-  // Fungsi Chat AI Ambient (Contoh Sederhana)
+  // FUNGSI CHAT AI REAL
   const askAI = async () => {
-    if (!AMBIENT_API_KEY) return toast.error("API Key not set in Vercel!");
-    toast.success("AI Assistant: KiiSwap is ready!");
-    // Logika fetch Ambient bisa ditaruh di sini
+    if (!aiPrompt) return toast.error("Ketik sesuatu untuk bertanya!");
+    if (!AMBIENT_API_KEY) return toast.error("API Key Vercel belum diset!");
+    
+    setLoading(true);
+    const toastId = toast.loading("AI sedang menganalisis...");
+    
+    try {
+      const response = await fetch('https://api.ambient.xyz/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${AMBIENT_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: aiPrompt }],
+          stream: false
+        })
+      });
+
+      const data = await response.json();
+      const reply = data.choices[0].message.content;
+      setAiResponse(reply);
+      toast.success("AI Berhasil menjawab!", { id: toastId });
+    } catch (e) {
+      console.error(e);
+      toast.error("Gagal terhubung ke Ambient AI", { id: toastId });
+    }
+    setLoading(false);
   };
 
   return (
@@ -111,10 +138,10 @@ export default function App() {
         <div style={styles.tabBox}>
           <button onClick={() => setTab('swap')} style={{...styles.tabBtn, background: tab === 'swap' ? '#10b981' : 'transparent', color: tab === 'swap' ? '#000' : '#444'}}>SWAP</button>
           <button onClick={() => setTab('pool')} style={{...styles.tabBtn, background: tab === 'pool' ? '#10b981' : 'transparent', color: tab === 'pool' ? '#000' : '#444'}}>LIQUIDITY</button>
-          <button style={styles.tabBtn} onClick={askAI}><MessageSquare size={16} /> AI</button>
+          <button onClick={() => setTab('ai')} style={{...styles.tabBtn, background: tab === 'ai' ? '#10b981' : 'transparent', color: tab === 'ai' ? '#000' : '#444'}}><MessageSquare size={16} /> AI</button>
         </div>
 
-        {tab === 'swap' ? (
+        {tab === 'swap' && (
           <div style={styles.content}>
             <div style={styles.inputCard}>
               <div style={styles.inputHeader}>
@@ -156,14 +183,38 @@ export default function App() {
               {loading ? 'PROCESSING...' : 'SWAP NOW'}
             </button>
           </div>
-        ) : (
+        )}
+
+        {tab === 'pool' && (
           <div style={styles.content}>
-            {/* Liquid Section (Sama seperti sebelumnya) */}
             <div style={styles.inputCard}>
                <span style={styles.label}>ADD LIQUIDITY</span>
                <input type="number" placeholder="KII Amount" value={amountAdd1} onChange={(e) => setAmountAdd1(e.target.value)} style={styles.simpleInput} />
                <input type="number" placeholder="SLVR Amount" value={amountAdd0} onChange={(e) => setAmountAdd0(e.target.value)} style={{...styles.simpleInput, marginTop: '10px'}} />
                <button onClick={handleSwap} style={styles.addLiqBtn}>+ ADD LIQUIDITY</button>
+            </div>
+          </div>
+        )}
+
+        {tab === 'ai' && (
+          <div style={styles.content}>
+            <div style={styles.inputCard}>
+              <span style={styles.label}>AMBIENT AI ASSISTANT</span>
+              <div style={styles.aiBox}>
+                {aiResponse ? aiResponse : "Halo! Saya asisten AI KiiSwap. Ada yang bisa saya bantu?"}
+              </div>
+              <div style={{display: 'flex', gap: '10px', marginTop: '15px'}}>
+                <input 
+                  type="text" 
+                  placeholder="Tanya sesuatu..." 
+                  value={aiPrompt} 
+                  onChange={(e) => setAiPrompt(e.target.value)} 
+                  style={styles.simpleInput} 
+                />
+                <button onClick={askAI} disabled={loading} style={styles.sendBtn}>
+                  <Send size={20} />
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -196,6 +247,8 @@ const styles = {
   arrowCircle: { background: '#020a08', border: '1px solid #10b981', padding: '12px', borderRadius: '50%', cursor: 'pointer' },
   secText: { textAlign: 'center', fontSize: '11px', color: '#333', margin: '25px 0', letterSpacing: '4px' },
   mainActionBtn: { background: '#10b981', color: '#000', border: 'none', width: '100%', padding: '25px', borderRadius: '25px', fontSize: '24px', fontWeight: 'bold', cursor: 'pointer', transition: '0.3s' },
-  simpleInput: { background: '#000', border: '1px solid #222', padding: '15px', borderRadius: '12px', width: '100%', boxSizing: 'border-box', color: '#fff' },
-  addLiqBtn: { width: '100%', marginTop: '15px', padding: '15px', background: '#10b98122', color: '#10b981', border: '1px solid #10b981', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' }
+  simpleInput: { background: '#000', border: '1px solid #222', padding: '15px', borderRadius: '12px', width: '100%', boxSizing: 'border-box', color: '#fff', outline: 'none' },
+  addLiqBtn: { width: '100%', marginTop: '15px', padding: '15px', background: '#10b98122', color: '#10b981', border: '1px solid #10b981', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' },
+  aiBox: { background: '#000', padding: '20px', borderRadius: '15px', marginTop: '15px', minHeight: '100px', fontSize: '14px', lineHeight: '1.6', color: '#ccc', border: '1px solid #10b98122' },
+  sendBtn: { background: '#10b981', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }
 };
