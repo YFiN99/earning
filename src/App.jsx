@@ -1,254 +1,333 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
-import { ArrowDown, Zap, RefreshCw, Plus, Trash2, ArrowUpDown, ChevronDown, MessageSquare, Send } from 'lucide-react';
+import { ChevronDown, ArrowUpDown, X, Loader2, Droplets, Trash2, Coins, Wallet } from 'lucide-react';
 import { Toaster, toast } from 'react-hot-toast';
 
-const DEX_ADDRESS = "0x0aEa13Db0b307a541E22cd272BB34f8e6FeE7c52"; 
-const SLVR_ADDRESS = "0x571e42E46AFd658471d609B19448bd0ef910E777";
-const WKII_ADDRESS = "0x5B8832c0087c2E1F2Df579567A93B8d1420329B0";
-const POOL_ID = "0xf0d632cccf45506f4a5b2df2251e9edd54681e79135ddc65f5b6995699fbad6c";
+// --- CONFIG ---
+import coreData from './constants/core_testnet.json';
+import tokenListData from './constants/tokenList.json';
 
-const AMBIENT_API_KEY = import.meta.env.VITE_AMBIENT_API_KEY;
+const MY_AGGREGATOR = "0x7abB56F87646B545dfeA9b9b94451a3780Ee2b87"; 
+const WKII_ADDRESS = "0xd51e7187e54a4A22D790f8bbDdd9B54b891Bc920";
+const POSITION_MANAGER_ADDRESS = "0x841231Aa31685321E0bAED56e4b17Cae093Bf0fB";
+const CORRECT_RPC = "https://json-rpc.dos.sentry.testnet.v3.kiivalidator.com/";
 
-const DEX_ABI = [
-  "function swapKIIForToken(bytes32 poolId) external payable",
-  "function swap(bytes32 poolId, address tokenIn, uint256 amountIn) external",
-  "function addLiquidity(bytes32 poolId, uint256 amount0, uint256 amount1) external",
-  "function removeLiquidity(bytes32 poolId, uint256 lpAmount) external"
+const AGGREGATOR_ABI = [
+  "function swapKii(address tokenOut) external payable",
+  "function swapTokenToKii(address tokenIn, uint256 amountIn) external",
+  "function swapUniversal(address tokenIn, address tokenOut, uint256 amountIn) external",
+  "function addLiquidity(address tokenOther, uint256 amountOther) external payable",
+  "function removeLiquidityFull(uint256 tokenId, uint128 liquidity) external",
+  "function collectOnly(uint256 tokenId) external"
 ];
 
-const ERC20_ABI = [
-  "function balanceOf(address account) view returns (uint256)",
-  "function approve(address spender, uint256 amount) external returns (bool)"
+const QUOTER_ABI = [
+  "function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96)) external returns (uint256 amountOut)",
+  "function quoteExactInput(bytes path, uint256 amountIn) external returns (uint256 amountOut)"
 ];
+
+const ERC20_ABI = ["function approve(address spender, uint256 amount) external returns (bool)", "function balanceOf(address) view returns (uint256)"];
+const POSITION_MANAGER_ABI = [
+  "function approve(address to, uint256 tokenId) external", 
+  "function balanceOf(address owner) view returns (uint256)", 
+  "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)", 
+  "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)"
+];
+
+const NATIVE_KII = { 
+  symbol: 'KII', 
+  name: 'Native KII', 
+  address: WKII_ADDRESS, 
+  decimals: 18,
+  logoURI: "https://avatars.githubusercontent.com/u/139797706" 
+};
+const FULL_TOKEN_LIST = [NATIVE_KII, ...tokenListData.tokens];
 
 export default function App() {
   const [tab, setTab] = useState('swap');
   const [account, setAccount] = useState('');
-  const [amountIn, setAmountIn] = useState('');
-  const [amountAdd0, setAmountAdd0] = useState('');
-  const [amountAdd1, setAmountAdd1] = useState('');
-  const [lpRemoveAmount, setLpRemoveAmount] = useState('');
-  const [balances, setBalances] = useState({ kii: '0.000000', slvr: '0.000000' });
   const [loading, setLoading] = useState(false);
-  const [isKiiTop, setIsKiiTop] = useState(true);
-  
-  // State Baru untuk Chat AI
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [aiResponse, setAiResponse] = useState('');
+  const [balances, setBalances] = useState({});
+  const [tokenIn, setTokenIn] = useState(FULL_TOKEN_LIST[0]);
+  const [tokenOut, setTokenOut] = useState(FULL_TOKEN_LIST[1]);
+  const [amount, setAmount] = useState('');
+  const [amountOutManual, setAmountOutManual] = useState(''); 
+  const [estimatedOut, setEstimatedOut] = useState('0.00');
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalType, setModalType] = useState('in');
+  const [userPositions, setUserPositions] = useState([]);
 
-  const fetchBalances = async (acc) => {
-    try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const kiiBal = await provider.getBalance(acc);
-      const slvrContract = new ethers.Contract(SLVR_ADDRESS, ERC20_ABI, provider);
-      const sBal = await slvrContract.balanceOf(acc);
-      setBalances({ 
-        kii: parseFloat(ethers.formatEther(kiiBal)).toFixed(6), 
-        slvr: parseFloat(ethers.formatEther(sBal)).toFixed(6) 
-      });
-    } catch (e) { console.error(e); }
-  };
-
-  const connect = async () => {
-    if (!window.ethereum) return toast.error("Install MetaMask!");
-    const accs = await window.ethereum.request({ method: 'eth_requestAccounts' });
-    setAccount(accs[0]);
-    fetchBalances(accs[0]);
-  };
-
-  const handleMax = () => {
-    if (isKiiTop) {
-      const val = parseFloat(balances.kii) - 0.005;
-      setAmountIn(val > 0 ? val.toFixed(6) : '0');
-    } else {
-      setAmountIn(balances.slvr);
+  const connectWallet = async () => {
+    if (window.ethereum) {
+      const accs = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      setAccount(accs[0]);
     }
   };
 
-  const handleSwap = async () => {
-    if (!amountIn || !account) return connect();
+  const fetchBalances = useCallback(async () => {
+    if (!account) return;
+    const provider = new ethers.JsonRpcProvider(CORRECT_RPC);
+    const newBals = {};
+    for (const t of FULL_TOKEN_LIST) {
+      try {
+        if (t.symbol === 'KII') {
+          const b = await provider.getBalance(account);
+          newBals[t.address] = ethers.formatEther(b);
+        } else {
+          const c = new ethers.Contract(t.address, ERC20_ABI, provider);
+          const b = await c.balanceOf(account).catch(() => 0n);
+          newBals[t.address] = ethers.formatUnits(b, t.decimals);
+        }
+      } catch (e) { newBals[t.address] = "0"; }
+    }
+    setBalances(newBals);
+  }, [account]);
+
+  const fetchPositions = useCallback(async () => {
+    if (!account) return;
+    try {
+      const provider = new ethers.JsonRpcProvider(CORRECT_RPC);
+      const manager = new ethers.Contract(POSITION_MANAGER_ADDRESS, POSITION_MANAGER_ABI, provider);
+      const balance = await manager.balanceOf(account);
+      const pos = [];
+      for (let i = 0; i < Number(balance); i++) {
+        const id = await manager.tokenOfOwnerByIndex(account, i);
+        const detail = await manager.positions(id);
+        pos.push({ 
+          id: id.toString(), 
+          liquidity: detail.liquidity.toString(),
+          fee0: ethers.formatUnits(detail.tokensOwed0, 18), 
+          fee1: ethers.formatUnits(detail.tokensOwed1, 18)
+        });
+      }
+      setUserPositions(pos);
+    } catch (e) { console.error("Fetch Pos Error:", e); }
+  }, [account]);
+
+  useEffect(() => { 
+    fetchBalances(); 
+    if (tab === 'remove') fetchPositions();
+  }, [account, tab, fetchBalances, fetchPositions]);
+
+  const fetchPrice = useCallback(async () => {
+    if (tab !== 'swap') return;
+    if (!amount || isNaN(amount) || parseFloat(amount) <= 0) { setEstimatedOut('0.00'); return; }
+    setPriceLoading(true);
+    try {
+      const provider = new ethers.JsonRpcProvider(CORRECT_RPC);
+      const quoter = new ethers.Contract(coreData.quoterV2Address, QUOTER_ABI, provider);
+      const valIn = ethers.parseUnits(amount, tokenIn.decimals);
+      let out;
+      if (tokenIn.symbol === 'KII' || tokenOut.symbol === 'KII') {
+        out = await quoter.quoteExactInputSingle.staticCall({ tokenIn: tokenIn.address, tokenOut: tokenOut.address, amountIn: valIn, fee: 3000, sqrtPriceLimitX96: 0 });
+      } else {
+        const path = `0x${tokenIn.address.replace('0x','')}${"000bb8"}${WKII_ADDRESS.replace('0x','')}${"000bb8"}${tokenOut.address.replace('0x','')}`;
+        out = await quoter.quoteExactInput.staticCall(path, valIn);
+      }
+      setEstimatedOut(ethers.formatUnits(out, tokenOut.decimals));
+    } catch (e) { setEstimatedOut("No Pool"); }
+    finally { setPriceLoading(false); }
+  }, [amount, tokenIn, tokenOut, tab]);
+
+  useEffect(() => { const t = setTimeout(fetchPrice, 500); return () => clearTimeout(t); }, [fetchPrice]);
+
+  const handleAction = async () => {
+    if(!account) return connectWallet();
     setLoading(true);
-    const toastId = toast.loading("Processing...");
+    const tid = toast.loading("Processing...");
     try {
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
-      const dex = new ethers.Contract(DEX_ADDRESS, DEX_ABI, signer);
-      if (isKiiTop) {
-        await (await dex.swapKIIForToken(POOL_ID, { value: ethers.parseEther(amountIn) })).wait();
+      const agg = new ethers.Contract(MY_AGGREGATOR, AGGREGATOR_ABI, signer);
+      
+      if(tab === 'swap') {
+        if(tokenIn.symbol === 'KII') await (await agg.swapKii(tokenOut.address, { value: ethers.parseUnits(amount, 18) })).wait();
+        else if(tokenOut.symbol === 'KII') {
+          await (await new ethers.Contract(tokenIn.address, ERC20_ABI, signer).approve(MY_AGGREGATOR, ethers.parseUnits(amount, tokenIn.decimals))).wait();
+          await (await agg.swapTokenToKii(tokenIn.address, ethers.parseUnits(amount, tokenIn.decimals))).wait();
+        } else {
+          await (await new ethers.Contract(tokenIn.address, ERC20_ABI, signer).approve(MY_AGGREGATOR, ethers.parseUnits(amount, tokenIn.decimals))).wait();
+          await (await agg.swapUniversal(tokenIn.address, tokenOut.address, ethers.parseUnits(amount, tokenIn.decimals))).wait();
+        }
       } else {
-        const slvr = new ethers.Contract(SLVR_ADDRESS, ERC20_ABI, signer);
-        await (await slvr.approve(DEX_ADDRESS, ethers.parseEther(amountIn))).wait();
-        await (await dex.swap(POOL_ID, SLVR_ADDRESS, ethers.parseEther(amountIn))).wait();
+        const isToken1Kii = tokenIn.symbol === 'KII';
+        const tokenOther = isToken1Kii ? tokenOut : tokenIn;
+        const amtKii = isToken1Kii ? amount : amountOutManual; 
+        const amtOther = isToken1Kii ? amountOutManual : amount;
+        if (!amtKii || !amtOther) throw new Error("Please enter both amounts");
+        await (await new ethers.Contract(tokenOther.address, ERC20_ABI, signer).approve(MY_AGGREGATOR, ethers.parseUnits(amtOther, tokenOther.decimals))).wait();
+        await (await agg.addLiquidity(tokenOther.address, ethers.parseUnits(amtOther, tokenOther.decimals), { value: ethers.parseUnits(amtKii, 18) })).wait();
       }
-      toast.success("Swap Success!", { id: toastId });
-      fetchBalances(account);
-      setAmountIn('');
-    } catch (e) { toast.error("Failed"); }
-    setLoading(false);
+      toast.success("Success!", {id:tid}); 
+      setAmount(''); setAmountOutManual(''); fetchBalances();
+    } catch(e) { toast.error(e.message || "Failed!", {id:tid}); } 
+    finally { setLoading(false); }
   };
 
-  // FUNGSI CHAT AI REAL
-  const askAI = async () => {
-    if (!aiPrompt) return toast.error("Ketik sesuatu untuk bertanya!");
-    if (!AMBIENT_API_KEY) return toast.error("API Key Vercel belum diset!");
-    
-    setLoading(true);
-    const toastId = toast.loading("AI sedang menganalisis...");
-    
-    try {
-      const response = await fetch('https://api.ambient.xyz/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${AMBIENT_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: [{ role: 'user', content: aiPrompt }],
-          stream: false
-        })
-      });
-
-      const data = await response.json();
-      const reply = data.choices[0].message.content;
-      setAiResponse(reply);
-      toast.success("AI Berhasil menjawab!", { id: toastId });
-    } catch (e) {
-      console.error(e);
-      toast.error("Gagal terhubung ke Ambient AI", { id: toastId });
-    }
-    setLoading(false);
-  };
+  const LogoIcon = ({ t }) => (
+    <div className="w-10 h-10 bg-slate-800 rounded-2xl flex items-center justify-center overflow-hidden border border-slate-700 relative shadow-inner group">
+      <span className="absolute inset-0 flex items-center justify-center font-black text-indigo-500 text-lg uppercase">{t.symbol[0]}</span>
+      {t.logoURI && (
+        <img src={t.logoURI} alt={t.symbol} className="w-full h-full object-contain z-10 p-1 relative" onError={(e) => { e.target.style.opacity = '0'; }} />
+      )}
+    </div>
+  );
 
   return (
-    <div style={styles.body}>
-      <Toaster />
-      
-      <nav style={styles.nav}>
-        <div style={styles.logoGroup}>
-          <div style={styles.logoIcon}>D</div>
-          <span style={styles.brandName}>DECENTRALIZED</span>
-        </div>
-        <button onClick={connect} style={styles.connectBtn}>
-          {account ? `${account.slice(0,6)}...${account.slice(-4)}` : 'CONNECT'}
-        </button>
-      </nav>
-
-      <div style={styles.container}>
-        <div style={styles.tabBox}>
-          <button onClick={() => setTab('swap')} style={{...styles.tabBtn, background: tab === 'swap' ? '#10b981' : 'transparent', color: tab === 'swap' ? '#000' : '#444'}}>SWAP</button>
-          <button onClick={() => setTab('pool')} style={{...styles.tabBtn, background: tab === 'pool' ? '#10b981' : 'transparent', color: tab === 'pool' ? '#000' : '#444'}}>LIQUIDITY</button>
-          <button onClick={() => setTab('ai')} style={{...styles.tabBtn, background: tab === 'ai' ? '#10b981' : 'transparent', color: tab === 'ai' ? '#000' : '#444'}}><MessageSquare size={16} /> AI</button>
+    <div className="min-h-screen bg-[#020617] text-white flex items-center justify-center p-4 font-sans uppercase tracking-tighter">
+      <Toaster position="top-center" />
+      <div className="w-full max-w-[600px] bg-[#0f172a] rounded-[44px] p-7 border border-slate-800 shadow-2xl overflow-hidden relative">
+        
+        <div className="flex justify-between items-center mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center font-black italic shadow-lg text-white text-xl">X</div>
+            <h1 className="text-xl font-black italic text-white tracking-tighter"> predator <span className="text-indigo-500"></span></h1>
+          </div>
+          <button onClick={connectWallet} className="text-[10px] font-bold bg-slate-800/50 hover:bg-slate-800 px-4 py-2.5 rounded-2xl border border-slate-700 transition-all text-indigo-400">
+            {account ? `${account.slice(0,6)}...` : 'CONNECT'}
+          </button>
         </div>
 
-        {tab === 'swap' && (
-          <div style={styles.content}>
-            <div style={styles.inputCard}>
-              <div style={styles.inputHeader}>
-                <span style={styles.label}>YOU PAY</span>
-                <span style={styles.balance}>
-                  BALANCE: {isKiiTop ? balances.kii : balances.slvr} 
-                  <span onClick={handleMax} style={styles.maxBtn}>MAX</span>
+        <div className="flex bg-slate-900/80 p-1.5 rounded-[22px] mb-8 border border-slate-800/50 shadow-inner">
+          {['swap', 'pool', 'remove'].map(m => (
+            <button key={m} onClick={() => { setTab(m); setAmount(''); setAmountOutManual(''); }} className={`flex-1 py-3 rounded-[18px] text-[10px] font-black uppercase tracking-widest transition-all ${tab === m ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>{m}</button>
+          ))}
+        </div>
+
+        {(tab === 'swap' || tab === 'pool') && (
+          <div className="space-y-1">
+            <div className="bg-[#1e293b]/40 p-6 rounded-[32px] border border-slate-800/60">
+              <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-3 uppercase">
+                <span>{tab === 'swap' ? 'Pay' : 'Asset 1'}</span>
+                <span className="text-indigo-400 cursor-pointer" onClick={() => setAmount(balances[tokenIn.address] || '0')}>
+                   BAL: {parseFloat(balances[tokenIn.address] || 0).toFixed(4)}
                 </span>
               </div>
-              <div style={styles.inputRow}>
-                <input type="number" placeholder="0.0" value={amountIn} onChange={(e) => setAmountIn(e.target.value)} style={styles.amountInput} />
-                <div style={styles.tokenSelect} onClick={() => setIsKiiTop(!isKiiTop)}>
-                  {isKiiTop ? 'KII' : 'SLVR'} <ChevronDown size={14} />
-                </div>
+              <div className="flex items-center justify-between">
+                <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" className="bg-transparent text-4xl font-black outline-none w-1/2 placeholder:text-slate-800" />
+                <button onClick={() => { setModalType('in'); setIsModalOpen(true); }} className="bg-slate-800 hover:bg-slate-700 px-4 py-3 rounded-2xl border border-slate-700 flex items-center gap-3 font-black text-sm transition-all shadow-xl">
+                  <LogoIcon t={tokenIn} /> {tokenIn.symbol} <ChevronDown size={16} className="text-indigo-500" />
+                </button>
               </div>
             </div>
 
-            <div style={styles.arrowBox}>
-              <div style={styles.arrowCircle} onClick={() => setIsKiiTop(!isKiiTop)}>
-                <ArrowDown size={18} color="#10b981" />
+            <div className="flex justify-center -my-6 relative z-10">
+              <button onClick={() => { setTokenIn(tokenOut); setTokenOut(tokenIn); setAmount(''); setAmountOutManual(''); }} className="bg-[#0f172a] p-4 rounded-2xl border border-slate-800 text-indigo-500 shadow-2xl hover:scale-110 active:rotate-180 transition-all">
+                <ArrowUpDown size={22} />
+              </button>
+            </div>
+
+            <div className="bg-[#1e293b]/40 p-6 rounded-[32px] border border-slate-800/60 mt-2">
+              <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-3 uppercase">
+                <span>{tab === 'swap' ? 'Receive' : 'Asset 2'}</span>
+                <span className="text-slate-600">BAL: {parseFloat(balances[tokenOut.address] || 0).toFixed(4)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                {tab === 'swap' ? (
+                  <div className="text-3xl font-black truncate">
+                    {priceLoading ? <Loader2 className="animate-spin text-indigo-500"/> : estimatedOut}
+                  </div>
+                ) : (
+                  <input type="number" value={amountOutManual} onChange={(e) => setAmountOutManual(e.target.value)} placeholder="0.0" className="bg-transparent text-4xl font-black outline-none w-1/2 placeholder:text-slate-800" />
+                )}
+                <button onClick={() => { setModalType('out'); setIsModalOpen(true); }} className="bg-slate-800 hover:bg-slate-700 px-4 py-3 rounded-2xl border border-slate-700 flex items-center gap-3 font-black text-sm transition-all shadow-xl">
+                  <LogoIcon t={tokenOut} /> {tokenOut.symbol} <ChevronDown size={16} className="text-indigo-500" />
+                </button>
               </div>
             </div>
 
-            <div style={styles.inputCard}>
-              <div style={styles.inputHeader}>
-                <span style={styles.label}>YOU RECEIVE</span>
-                <span style={styles.balance}>BALANCE: {isKiiTop ? balances.slvr : balances.kii}</span>
-              </div>
-              <div style={styles.inputRow}>
-                <div style={styles.amountDisplay}>{amountIn ? (amountIn * 0.99).toFixed(4) : '0.0'}</div>
-                <div style={styles.tokenSelect}>
-                  {isKiiTop ? 'SLVR' : 'KII'} <ChevronDown size={14} />
-                </div>
-              </div>
-            </div>
-
-            <div style={styles.secText}>SECURED PROTOCOL</div>
-            <button onClick={handleSwap} disabled={loading} style={styles.mainActionBtn}>
-              {loading ? 'PROCESSING...' : 'SWAP NOW'}
+            <button onClick={handleAction} disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-500 py-6 rounded-[30px] font-black text-lg mt-6 shadow-xl shadow-indigo-500/20 active:scale-95 transition-all italic tracking-tighter uppercase">
+              {loading ? "PENDING..." : (tab === 'swap' ? 'Confirm Swap' : 'Add Liquidity')}
             </button>
           </div>
         )}
 
-        {tab === 'pool' && (
-          <div style={styles.content}>
-            <div style={styles.inputCard}>
-               <span style={styles.label}>ADD LIQUIDITY</span>
-               <input type="number" placeholder="KII Amount" value={amountAdd1} onChange={(e) => setAmountAdd1(e.target.value)} style={styles.simpleInput} />
-               <input type="number" placeholder="SLVR Amount" value={amountAdd0} onChange={(e) => setAmountAdd0(e.target.value)} style={{...styles.simpleInput, marginTop: '10px'}} />
-               <button onClick={handleSwap} style={styles.addLiqBtn}>+ ADD LIQUIDITY</button>
-            </div>
-          </div>
-        )}
+        {tab === 'remove' && (
+          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+            {userPositions.length === 0 && <div className="text-center py-20 text-slate-600 font-bold text-[10px] tracking-[0.2em]">No Liquidity Found</div>}
+            {userPositions.map((p) => (
+              <div key={p.id} className="bg-[#1e293b]/40 p-6 rounded-[32px] border border-slate-800 hover:border-indigo-500/30 transition-all">
+                <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <div className="text-xs font-black text-indigo-400 mb-2 uppercase">Position #{p.id}</div>
+                    <div className="space-y-1">
+                        <div className="text-[10px] font-black text-green-400">FEE 0: {parseFloat(p.fee0).toFixed(6)}</div>
+                        <div className="text-[10px] font-black text-green-400">FEE 1: {parseFloat(p.fee1).toFixed(6)}</div>
+                    </div>
+                  </div>
+                  <div className="text-[9px] bg-slate-800 px-3 py-1.5 rounded-xl font-black text-slate-400 uppercase tracking-widest">NFT LP</div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                    <button 
+                      disabled={loading || (parseFloat(p.fee0) === 0 && parseFloat(p.fee1) === 0)}
+                      onClick={async () => {
+                        setLoading(true); const tid = toast.loading("Collecting...");
+                        try {
+                          const signer = await (new ethers.BrowserProvider(window.ethereum)).getSigner();
+                          const manager = new ethers.Contract(POSITION_MANAGER_ADDRESS, POSITION_MANAGER_ABI, signer);
+                          await (await manager.approve(MY_AGGREGATOR, p.id)).wait();
+                          await (await new ethers.Contract(MY_AGGREGATOR, AGGREGATOR_ABI, signer).collectOnly(p.id)).wait();
+                          toast.success("Collected!", {id: tid}); fetchPositions();
+                        } catch(e) { toast.error("Fail", {id: tid}); } finally { setLoading(false); }
+                      }} 
+                      className="bg-green-500/10 py-3.5 rounded-2xl text-green-500 border border-green-500/20 hover:bg-green-500 hover:text-white transition-all font-black text-[10px] flex items-center justify-center gap-2 disabled:opacity-20"
+                    >
+                        <Coins size={14}/> COLLECT
+                    </button>
 
-        {tab === 'ai' && (
-          <div style={styles.content}>
-            <div style={styles.inputCard}>
-              <span style={styles.label}>AMBIENT AI ASSISTANT</span>
-              <div style={styles.aiBox}>
-                {aiResponse ? aiResponse : "Halo! Saya asisten AI KiiSwap. Ada yang bisa saya bantu?"}
+                    <button 
+                      disabled={loading}
+                      onClick={async () => {
+                        setLoading(true); const tid = toast.loading("Removing...");
+                        try {
+                          const signer = await (new ethers.BrowserProvider(window.ethereum)).getSigner();
+                          const manager = new ethers.Contract(POSITION_MANAGER_ADDRESS, POSITION_MANAGER_ABI, signer);
+                          await (await manager.approve(MY_AGGREGATOR, p.id)).wait();
+                          await (await new ethers.Contract(MY_AGGREGATOR, AGGREGATOR_ABI, signer).removeLiquidityFull(p.id, p.liquidity)).wait();
+                          toast.success("Removed!", {id: tid}); fetchPositions(); fetchBalances();
+                        } catch(e) { toast.error("Fail", {id: tid}); } finally { setLoading(false); }
+                      }} 
+                      className="bg-red-500/10 py-3.5 rounded-2xl text-red-500 border border-red-500/20 hover:bg-red-500 hover:text-white transition-all font-black text-[10px] flex items-center justify-center gap-2"
+                    >
+                        <Trash2 size={14}/> REMOVE
+                    </button>
+                </div>
               </div>
-              <div style={{display: 'flex', gap: '10px', marginTop: '15px'}}>
-                <input 
-                  type="text" 
-                  placeholder="Tanya sesuatu..." 
-                  value={aiPrompt} 
-                  onChange={(e) => setAiPrompt(e.target.value)} 
-                  style={styles.simpleInput} 
-                />
-                <button onClick={askAI} disabled={loading} style={styles.sendBtn}>
-                  <Send size={20} />
-                </button>
-              </div>
-            </div>
+            ))}
           </div>
         )}
       </div>
+
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-xl flex items-center justify-center p-6 z-[100]">
+          <div className="bg-[#0f172a] w-full max-w-sm rounded-[48px] p-8 border border-slate-800 shadow-3xl">
+            <div className="flex justify-between items-center mb-8 px-2">
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Select Asset</span>
+              <button onClick={() => setIsModalOpen(false)} className="bg-slate-800 p-2.5 rounded-2xl text-slate-400 hover:text-white transition-all"><X size={18} /></button>
+            </div>
+            <div className="max-h-96 overflow-y-auto space-y-2 pr-2">
+              {FULL_TOKEN_LIST.map(t => (
+                <div key={t.address} onClick={() => { if(modalType==='in') setTokenIn(t); else setTokenOut(t); setIsModalOpen(false); setAmount(''); setAmountOutManual(''); }} 
+                  className="flex items-center justify-between p-5 hover:bg-indigo-600/10 rounded-[32px] cursor-pointer group border border-transparent hover:border-indigo-500/30 transition-all">
+                  <div className="flex items-center gap-5">
+                    <LogoIcon t={t} />
+                    <div>
+                      <div className="font-black text-slate-200 text-md tracking-tight uppercase">{t.symbol}</div>
+                      <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">{t.name}</div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-black text-slate-300">{parseFloat(balances[t.address] || 0).toLocaleString(undefined, {maximumFractionDigits: 4})}</div>
+                    <div className="text-[8px] text-slate-600 font-bold uppercase">BALANCE</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-const styles = {
-  body: { minHeight: '100vh', background: '#020a08', color: '#fff', fontFamily: '"Arial Black", Gadget, sans-serif' },
-  nav: { display: 'flex', justifyContent: 'space-between', padding: '20px 60px', alignItems: 'center' },
-  logoGroup: { display: 'flex', alignItems: 'center', gap: '15px' },
-  logoIcon: { background: '#10b981', color: '#000', padding: '5px 12px', borderRadius: '8px', fontWeight: 'bold', fontSize: '20px', boxShadow: '0 0 15px #10b981aa' },
-  brandName: { letterSpacing: '3px', fontWeight: 'bold', fontSize: '22px', color: '#10b981' },
-  connectBtn: { background: '#10b981', color: '#000', border: 'none', padding: '10px 25px', borderRadius: '20px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' },
-  container: { maxWidth: '550px', margin: '40px auto', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '40px', padding: '30px', boxShadow: '0 40px 100px rgba(0,0,0,0.8)' },
-  tabBox: { display: 'flex', background: '#000', borderRadius: '20px', padding: '5px', marginBottom: '30px' },
-  tabBtn: { flex: 1, border: 'none', padding: '15px', borderRadius: '15px', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer', transition: '0.3s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: '#444' },
-  content: { display: 'flex', flexDirection: 'column', gap: '5px' },
-  inputCard: { background: 'rgba(0,0,0,0.4)', padding: '25px', borderRadius: '25px', border: '1px solid rgba(255,255,255,0.05)' },
-  inputHeader: { display: 'flex', justifyContent: 'space-between', marginBottom: '15px' },
-  label: { color: '#10b981', fontSize: '11px', letterSpacing: '1px' },
-  balance: { color: '#555', fontSize: '11px', display: 'flex', alignItems: 'center' },
-  maxBtn: { color: '#10b981', marginLeft: '8px', cursor: 'pointer', fontWeight: 'bold', border: '1px solid #10b98133', padding: '2px 6px', borderRadius: '4px', fontSize: '9px' },
-  inputRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  amountInput: { background: 'transparent', border: 'none', color: '#fff', fontSize: '40px', outline: 'none', width: '60%' },
-  amountDisplay: { fontSize: '40px', color: '#888' },
-  tokenSelect: { background: '#121212', border: '1px solid #333', padding: '8px 15px', borderRadius: '15px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', cursor: 'pointer' },
-  arrowBox: { display: 'flex', justifyContent: 'center', margin: '-20px 0', zIndex: 10, position: 'relative' },
-  arrowCircle: { background: '#020a08', border: '1px solid #10b981', padding: '12px', borderRadius: '50%', cursor: 'pointer' },
-  secText: { textAlign: 'center', fontSize: '11px', color: '#333', margin: '25px 0', letterSpacing: '4px' },
-  mainActionBtn: { background: '#10b981', color: '#000', border: 'none', width: '100%', padding: '25px', borderRadius: '25px', fontSize: '24px', fontWeight: 'bold', cursor: 'pointer', transition: '0.3s' },
-  simpleInput: { background: '#000', border: '1px solid #222', padding: '15px', borderRadius: '12px', width: '100%', boxSizing: 'border-box', color: '#fff', outline: 'none' },
-  addLiqBtn: { width: '100%', marginTop: '15px', padding: '15px', background: '#10b98122', color: '#10b981', border: '1px solid #10b981', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' },
-  aiBox: { background: '#000', padding: '20px', borderRadius: '15px', marginTop: '15px', minHeight: '100px', fontSize: '14px', lineHeight: '1.6', color: '#ccc', border: '1px solid #10b98122' },
-  sendBtn: { background: '#10b981', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }
-};
