@@ -34,10 +34,11 @@ const POSITION_MANAGER_ABI = [
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)"
 ];
 
+// PERBAIKAN: Gunakan "NATIVE" agar tidak bentrok dengan alamat WKII
 const NATIVE_KII = { 
   symbol: 'KII', 
   name: 'Native KII', 
-  address: WKII_ADDRESS, 
+  address: "NATIVE", 
   decimals: 18,
   logoURI: "https://avatars.githubusercontent.com/u/139797706" 
 };
@@ -65,23 +66,30 @@ export default function App() {
     }
   };
 
+  // PERBAIKAN: Fungsi fetch saldo yang jauh lebih akurat
   const fetchBalances = useCallback(async () => {
     if (!account) return;
-    const provider = new ethers.JsonRpcProvider(CORRECT_RPC);
-    const newBals = {};
-    for (const t of FULL_TOKEN_LIST) {
-      try {
-        if (t.symbol === 'KII') {
-          const b = await provider.getBalance(account);
-          newBals[t.address] = ethers.formatEther(b);
-        } else {
-          const c = new ethers.Contract(t.address, ERC20_ABI, provider);
-          const b = await c.balanceOf(account).catch(() => 0n);
-          newBals[t.address] = ethers.formatUnits(b, t.decimals);
+    try {
+      const provider = new ethers.JsonRpcProvider(CORRECT_RPC);
+      const newBals = {};
+      for (const t of FULL_TOKEN_LIST) {
+        try {
+          if (t.address === "NATIVE") {
+            const b = await provider.getBalance(account);
+            newBals[t.address] = ethers.formatEther(b);
+          } else {
+            const c = new ethers.Contract(t.address, ERC20_ABI, provider);
+            const b = await c.balanceOf(account).catch(() => 0n);
+            newBals[t.address] = ethers.formatUnits(b, t.decimals);
+          }
+        } catch (e) { 
+          newBals[t.address] = "0"; 
         }
-      } catch (e) { newBals[t.address] = "0"; }
+      }
+      setBalances(newBals);
+    } catch (e) {
+      console.error("Balance fetch error", e);
     }
-    setBalances(newBals);
   }, [account]);
 
   const fetchPositions = useCallback(async () => {
@@ -117,12 +125,17 @@ export default function App() {
     try {
       const provider = new ethers.JsonRpcProvider(CORRECT_RPC);
       const quoter = new ethers.Contract(coreData.quoterV2Address, QUOTER_ABI, provider);
+      
+      // Mapping address untuk quoter (NATIVE diganti WKII_ADDRESS saat panggil contract)
+      const addrIn = tokenIn.address === "NATIVE" ? WKII_ADDRESS : tokenIn.address;
+      const addrOut = tokenOut.address === "NATIVE" ? WKII_ADDRESS : tokenOut.address;
+      
       const valIn = ethers.parseUnits(amount, tokenIn.decimals);
       let out;
       if (tokenIn.symbol === 'KII' || tokenOut.symbol === 'KII') {
-        out = await quoter.quoteExactInputSingle.staticCall({ tokenIn: tokenIn.address, tokenOut: tokenOut.address, amountIn: valIn, fee: 3000, sqrtPriceLimitX96: 0 });
+        out = await quoter.quoteExactInputSingle.staticCall({ tokenIn: addrIn, tokenOut: addrOut, amountIn: valIn, fee: 3000, sqrtPriceLimitX96: 0 });
       } else {
-        const path = `0x${tokenIn.address.replace('0x','')}${"000bb8"}${WKII_ADDRESS.replace('0x','')}${"000bb8"}${tokenOut.address.replace('0x','')}`;
+        const path = `0x${addrIn.replace('0x','')}${"000bb8"}${WKII_ADDRESS.replace('0x','')}${"000bb8"}${addrOut.replace('0x','')}`;
         out = await quoter.quoteExactInput.staticCall(path, valIn);
       }
       setEstimatedOut(ethers.formatUnits(out, tokenOut.decimals));
@@ -142,8 +155,9 @@ export default function App() {
       const agg = new ethers.Contract(MY_AGGREGATOR, AGGREGATOR_ABI, signer);
       
       if(tab === 'swap') {
-        if(tokenIn.symbol === 'KII') await (await agg.swapKii(tokenOut.address, { value: ethers.parseUnits(amount, 18) })).wait();
-        else if(tokenOut.symbol === 'KII') {
+        if(tokenIn.address === 'NATIVE') {
+            await (await agg.swapKii(tokenOut.address, { value: ethers.parseUnits(amount, 18) })).wait();
+        } else if(tokenOut.address === 'NATIVE') {
           await (await new ethers.Contract(tokenIn.address, ERC20_ABI, signer).approve(MY_AGGREGATOR, ethers.parseUnits(amount, tokenIn.decimals))).wait();
           await (await agg.swapTokenToKii(tokenIn.address, ethers.parseUnits(amount, tokenIn.decimals))).wait();
         } else {
@@ -151,7 +165,7 @@ export default function App() {
           await (await agg.swapUniversal(tokenIn.address, tokenOut.address, ethers.parseUnits(amount, tokenIn.decimals))).wait();
         }
       } else {
-        const isToken1Kii = tokenIn.symbol === 'KII';
+        const isToken1Kii = tokenIn.address === 'NATIVE';
         const tokenOther = isToken1Kii ? tokenOut : tokenIn;
         const amtKii = isToken1Kii ? amount : amountOutManual; 
         const amtOther = isToken1Kii ? amountOutManual : amount;
@@ -166,26 +180,32 @@ export default function App() {
   };
 
   const LogoIcon = ({ t }) => (
-    <div className="w-10 h-10 bg-slate-800 rounded-2xl flex items-center justify-center overflow-hidden border border-slate-700 relative shadow-inner group">
-      <span className="absolute inset-0 flex items-center justify-center font-black text-indigo-500 text-lg uppercase">{t.symbol[0]}</span>
-      {t.logoURI && (
-        <img src={t.logoURI} alt={t.symbol} className="w-full h-full object-contain z-10 p-1 relative" onError={(e) => { e.target.style.opacity = '0'; }} />
-      )}
+    <div className="w-10 h-10 bg-[#0f172a] rounded-xl flex items-center justify-center overflow-hidden border border-slate-700 shadow-lg relative">
+      <img src={t.logoURI} alt={t.symbol} className="w-full h-full object-contain p-1" onError={(e) => e.target.src = "https://raw.githubusercontent.com/YFiN99/earning/main/log.PNG"} />
     </div>
   );
 
   return (
     <div className="min-h-screen bg-[#020617] text-white flex items-center justify-center p-4 font-sans uppercase tracking-tighter">
       <Toaster position="top-center" />
-      <div className="w-full max-w-[600px] bg-[#0f172a] rounded-[44px] p-7 border border-slate-800 shadow-2xl overflow-hidden relative">
+      <div className="w-full max-w-[550px] bg-[#0f172a] rounded-[44px] p-7 border border-slate-800 shadow-[0_0_50px_rgba(0,0,0,0.5)] relative">
         
-        <div className="flex justify-between items-center mb-8">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center font-black italic shadow-lg text-white text-xl">X</div>
-            <h1 className="text-xl font-black italic text-white tracking-tighter"> predator <span className="text-indigo-500"></span></h1>
+        {/* HEADER */}
+        <div className="flex justify-between items-center mb-10 px-2">
+          <div className="flex items-center gap-4">
+            <div className="w-16 h-16 rounded-2xl border-2 border-orange-500/40 overflow-hidden shadow-2xl bg-slate-900">
+              <img src="https://raw.githubusercontent.com/YFiN99/earning/main/log.PNG" alt="Logo" className="w-full h-full p-2" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-black italic">PREDATOR <span className="text-orange-500">DEX</span></h1>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                <span className="text-[10px] font-bold text-slate-500 uppercase">V3 ENGINE ACTIVE</span>
+              </div>
+            </div>
           </div>
-          <button onClick={connectWallet} className="text-[10px] font-bold bg-slate-800/50 hover:bg-slate-800 px-4 py-2.5 rounded-2xl border border-slate-700 transition-all text-indigo-400">
-            {account ? `${account.slice(0,6)}...` : 'CONNECT'}
+          <button onClick={connectWallet} className="text-[10px] font-black bg-[#1e293b] px-5 py-3 rounded-2xl border border-slate-700 text-orange-500">
+            {account ? `${account.slice(0,6)}...${account.slice(-4)}` : 'CONNECT'}
           </button>
         </div>
 
@@ -319,7 +339,9 @@ export default function App() {
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-sm font-black text-slate-300">{parseFloat(balances[t.address] || 0).toLocaleString(undefined, {maximumFractionDigits: 4})}</div>
+                    <div className="text-sm font-black text-slate-300">
+                        {balances[t.address] ? parseFloat(balances[t.address]).toLocaleString(undefined, {maximumFractionDigits: 4}) : "0.00"}
+                    </div>
                     <div className="text-[8px] text-slate-600 font-bold uppercase">BALANCE</div>
                   </div>
                 </div>
